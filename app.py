@@ -166,6 +166,7 @@ def _genie_space_agents() -> list[dict]:
                 "poweredBy": "Genie Space",
                 "spaceId": a["space_id"],
                 "hints": [str(h).lower() for h in (a.get("hints") or [])],
+                "example": a.get("example"),
             }
         )
     return out

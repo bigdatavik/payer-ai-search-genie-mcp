@@ -26,6 +26,8 @@ interface Agent {
   spaceId?: string;
   /** lowercase keywords for the optimistic highlight before Genie One replies */
   hints?: string[];
+  /** a starter question shown on the welcome screen */
+  example?: string | null;
 }
 
 /** Fallback live tile when no certified agents are configured (portable default). */
@@ -58,7 +60,8 @@ function guessAgent(question: string, lastId: string | null, liveAgents: Agent[]
   return liveAgents.length === 1 ? liveAgents[0].id : null;
 }
 
-const WELCOME_EXAMPLES = [
+/** Fallback starters when no certified agents are configured (portable default). */
+const DEFAULT_EXAMPLES = [
   { icon: "📈", q: "Show the key finance KPIs for the latest closed month." },
   { icon: "👥", q: "How many members are in each risk tier?" },
   { icon: "💊", q: "What's the Rx adherence (PDC) trend for our Stars measures?" },
@@ -77,6 +80,10 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const liveAgents = agents.filter((a) => a.status === "live");
+  const exampleAgents = liveAgents.filter((a) => a.example);
+  const examples = exampleAgents.length
+    ? exampleAgents.map((a) => ({ icon: a.icon, q: a.example as string }))
+    : DEFAULT_EXAMPLES;
 
   useEffect(() => {
     fetchWhoAmI().then(setWho).catch(() => setWho(null));
@@ -181,7 +188,7 @@ export default function App() {
         <div className="main">
           <main className="chat" ref={scrollRef}>
             <div className="chat-inner">
-              {!started && <Welcome onPick={send} disabled={busy} />}
+              {!started && <Welcome examples={examples} onPick={send} disabled={busy} />}
               {messages.map((msg, i) => (
                 <MessageBubble key={i} msg={msg} />
               ))}
@@ -296,7 +303,15 @@ function ConnectionBadge({ who }: { who: WhoAmI | null }) {
   );
 }
 
-function Welcome({ onPick, disabled }: { onPick: (q: string) => void; disabled: boolean }) {
+function Welcome({
+  examples,
+  onPick,
+  disabled,
+}: {
+  examples: { icon: string; q: string }[];
+  onPick: (q: string) => void;
+  disabled: boolean;
+}) {
   return (
     <div className="welcome">
       <span className="welcome-badge">🧭 One box · every certified agent</span>
@@ -306,7 +321,7 @@ function Welcome({ onPick, disabled }: { onPick: (q: string) => void; disabled: 
         answers — you don't choose an agent or hunt for the data.
       </p>
       <div className="examples">
-        {WELCOME_EXAMPLES.map((ex) => (
+        {examples.map((ex) => (
           <button key={ex.q} className="example" onClick={() => onPick(ex.q)} disabled={disabled}>
             <span className="example-icon" aria-hidden>
               {ex.icon}

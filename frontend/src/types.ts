@@ -21,6 +21,7 @@ export interface SpaceAgentConfig {
   poweredBy: string;
   spaceId: string;
   hints: string[];
+  example?: string | null;
 }
 
 export interface AppConfig {
