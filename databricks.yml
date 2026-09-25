@@ -1,0 +1,53 @@
+# =============================================================================
+# Payer Finance AI Search (React) — Databricks Asset Bundle
+# =============================================================================
+# FastAPI backend + pre-built React SPA, calling Genie One (the workspace-wide
+# discovery MCP). Uses on-behalf-of-user auth so each user's Unity Catalog
+# permissions apply.
+
+bundle:
+  name: payer-finance-genie-react
+
+variables:
+  app_name:
+    description: >
+      Databricks App name. Must start with "agent-" to appear in the Agents list
+      and be <= 30 characters.
+    default: agent-payer-genie-ui
+
+# The React build output (static/) is gitignored, so force-include it in the
+# bundle sync — otherwise the deployed app would ship without a frontend.
+# Run `npm run build` (see README) before deploying so static/ exists.
+sync:
+  include:
+    - static/**
+
+resources:
+  apps:
+    payer_finance_genie_react:
+      name: ${var.app_name}
+      description: "Payer Finance AI Search — a Genie One front door (React + FastAPI)."
+      source_code_path: ./
+      # On-behalf-of-user: Genie runs with the signed-in user's UC permissions.
+      user_api_scopes:
+        - genie
+      # Runtime config for DAB deploys (mirrors app.yaml). app.py binds
+      # $DATABRICKS_APP_PORT on 0.0.0.0 in its __main__ block.
+      config:
+        command:
+          - python
+          - app.py
+
+targets:
+  dev:
+    mode: development
+    default: true
+    variables:
+      app_name: agent-payer-genie-ui-dev
+
+  prod:
+    mode: production
+    variables:
+      app_name: agent-payer-genie-ui
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

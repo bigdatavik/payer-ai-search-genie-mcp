@@ -1,0 +1,6 @@
+# Kept small — all ultra-common wheels already mirrored in the Databricks Apps
+# package proxy, so the container build installs reliably.
+# (requests ships transitively with databricks-sdk and carries the MCP calls.)
+fastapi
+uvicorn[standard]
+databricks-sdk

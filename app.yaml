@@ -1,0 +1,12 @@
+# Databricks Apps runtime config (used by UI deploys; DABs uses databricks.yml).
+# The platform assigns the port via $DATABRICKS_APP_PORT and app.py reads it in
+# its __main__ block, so we just launch the module — no shell substitution needed.
+command:
+  - python
+  - app.py
+# Optional: register certified Genie Space agents as extra "live" agents beyond
+# the always-on Finance/Genie One agent. Leave this out to run Genie One only
+# (portable to any workspace). Each entry needs a space_id from your workspace.
+# env:
+#   - name: GENIE_SPACE_AGENTS
+#     value: '[{"id":"member360","name":"Member 360","icon":"👤","blurb":"Eligibility & risk","space_id":"<your-genie-space-id>","hints":["member","risk tier","care gap","eligibility","hcc"]}]'
