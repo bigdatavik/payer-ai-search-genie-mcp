@@ -1,0 +1,58 @@
+[
+  {
+    "id": "finance",
+    "name": "Finance & Reporting",
+    "icon": "📊",
+    "blurb": "KPIs, MLR, PMPM & variance",
+    "space_id": "01f1347ad0f1159b985214c7b9410183",
+    "hints": ["finance", "financial", "kpi", "pmpm", "mlr", "premium", "cost", "variance", "revenue", "margin", "forecast", "reporting"]
+  },
+  {
+    "id": "member360",
+    "name": "Member 360",
+    "icon": "👤",
+    "blurb": "Eligibility, risk & care gaps",
+    "space_id": "01f15add049814bf99df01115c78239f",
+    "hints": ["member", "members", "risk tier", "risk score", "hcc", "care gap", "eligibility", "dual", "chronic", "enrollment", "demographic"]
+  },
+  {
+    "id": "pharmacy",
+    "name": "CenterWell Pharmacy",
+    "icon": "💊",
+    "blurb": "Rx spend, adherence & PDC",
+    "space_id": "01f177fdb1cd100cada552ac69d234e5",
+    "hints": ["pharmacy", "rx", "drug", "adherence", "pdc", "formulary", "medication", "specialty", "mail order", "rebate"]
+  },
+  {
+    "id": "homehealth",
+    "name": "CenterWell Home Health",
+    "icon": "🏠",
+    "blurb": "Post-acute & rehospitalization",
+    "space_id": "01f177fdc1ef1102b1028a244aff8855",
+    "hints": ["home health", "post-acute", "rehospitalization", "readmission", "fall", "visit completion", "recovery"]
+  },
+  {
+    "id": "pco",
+    "name": "CenterWell PCO",
+    "icon": "🩺",
+    "blurb": "Primary care & utilization",
+    "space_id": "01f17668a56713b6a9325ee54ace7687",
+    "hints": ["primary care", "pco", "conviva", "attribution", "panel", "admits per 1000", "er visits", "post-discharge"]
+  },
+  {
+    "id": "hedis",
+    "name": "HEDIS Quality",
+    "icon": "✅",
+    "blurb": "HEDIS measures & Stars gaps",
+    "space_id": "01f18defefe41b3782682bfde1310b76",
+    "hints": ["hedis", "quality", "gap in care", "star", "stars", "measure", "ncqa", "compliance", "numerator", "denominator"]
+  },
+  {
+    "id": "maexit",
+    "name": "MA Plan Exit",
+    "icon": "📉",
+    "blurb": "Plan exits & recapture",
+    "space_id": "01f1ac90632a1e388daa8cf527e070db",
+    "hints": ["plan exit", "recapture", "contestable", "competitive", "market", "network adequacy", "exited"]
+  }
+]

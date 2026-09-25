@@ -5,9 +5,9 @@ import { askGenie, fetchConfig, fetchWhoAmI } from "./api";
 import type { CertifiedAsset, ChatMessage, WhoAmI } from "./types";
 
 const STATUS_LABEL: Record<string, string> = {
-  in_progress: "Discovering the certified asset…",
+  in_progress: "Genie One is routing across your certified agents…",
   submitted: "Sending to the agent…",
-  filtering_context: "Finding the right tables…",
+  filtering_context: "Finding the right certified agent…",
   asking_ai: "Generating SQL…",
   pending_warehouse: "Waiting for the warehouse…",
   fetching_metadata: "Gathering context…",
@@ -21,65 +21,55 @@ interface Agent {
   name: string;
   blurb: string;
   status: "live" | "preview";
-  poweredBy?: string;
+  /** Genie Space this certified agent corresponds to — used to match which
+   *  agent Genie One routed to (NOT to call it directly). */
   spaceId?: string;
-  /** lowercase keywords that route a question to this agent */
+  /** lowercase keywords for the optimistic highlight before Genie One replies */
   hints?: string[];
 }
 
-/**
- * Built-in roster. The Finance agent is always live via **Genie One** — the
- * managed MCP server that discovers across *every* certified Genie agent /
- * Genie space in the workspace, so it works in ANY workspace with zero config
- * and no asset IDs. The remaining tiles are illustrative previews (they stand
- * in for agents hosted outside Databricks).
- *
- * Extra live agents backed by a specific Genie Space are loaded at runtime from
- * /api/config (driven by the GENIE_SPACE_AGENTS env var) — nothing
- * workspace-specific is hardcoded here.
- */
-const BASE_AGENTS: Agent[] = [
-  {
-    id: "finance",
-    icon: "📊",
-    name: "Finance",
-    blurb: "KPIs, variance & PMPM",
-    status: "live",
-    poweredBy: "Genie One",
-    hints: [
-      "pmpm", "cost", "variance", "forecast", "kpi", "revenue", "margin",
-      "financial", "finance", "budget", "spend", "mlr", "premium", "profit", "ebitda", "trend",
-    ],
-  },
+/** Fallback live tile when no certified agents are configured (portable default). */
+const GENIE_ONE_FALLBACK: Agent = {
+  id: "genie-one",
+  icon: "🧭",
+  name: "Genie One",
+  blurb: "All certified agents",
+  status: "live",
+};
+
+/** External agents that run OUTSIDE Databricks — shown as previews. */
+const EXTERNAL_PREVIEWS: Agent[] = [
   { id: "claims", icon: "🧾", name: "Claims", blurb: "Status, denials & recovery", status: "preview" },
   { id: "priorauth", icon: "✅", name: "Prior Authorization", blurb: "Auth & utilization review", status: "preview" },
-  { id: "pharmacy", icon: "💊", name: "Pharmacy", blurb: "Drug spend & adherence", status: "preview" },
   { id: "network", icon: "🏥", name: "Provider Network", blurb: "Contracts & adequacy", status: "preview" },
   { id: "fwa", icon: "🛡️", name: "Fraud, Waste & Abuse", blurb: "Anomalies & SIU leads", status: "preview" },
 ];
 
-/** Auto-route a question to a live agent. Sticky to the last agent for
- *  ambiguous follow-ups so a conversation stays with one agent. */
-function routeAgent(question: string, lastId: string | null, liveAgents: Agent[]): string {
+/** Optimistic guess (before Genie One answers) of which certified agent will
+ *  handle the question, so a tile lights up immediately. Genie One makes the
+ *  real decision; we reconcile to it when the answer returns. */
+function guessAgent(question: string, lastId: string | null, liveAgents: Agent[]): string | null {
   const q = question.toLowerCase();
   for (const a of liveAgents) {
     if (a.hints?.some((h) => q.includes(h))) return a.id;
   }
-  return lastId ?? liveAgents[0]?.id ?? "finance";
+  // sticky to the last routed certified agent for ambiguous follow-ups
+  if (lastId && liveAgents.some((a) => a.id === lastId)) return lastId;
+  return liveAgents.length === 1 ? liveAgents[0].id : null;
 }
 
 const WELCOME_EXAMPLES = [
   { icon: "📈", q: "Show the key finance KPIs for the latest closed month." },
   { icon: "👥", q: "How many members are in each risk tier?" },
-  { icon: "🔍", q: "Why is Medical Cost PMPM above forecast, and what are the top drivers?" },
-  { icon: "⚠️", q: "Which members have the most open care gaps?" },
+  { icon: "💊", q: "What's the Rx adherence (PDC) trend for our Stars measures?" },
+  { icon: "✅", q: "Which HEDIS measures have the biggest gaps in care?" },
 ];
 
 export default function App() {
   const [who, setWho] = useState<WhoAmI | null>(null);
-  const [agents, setAgents] = useState<Agent[]>(BASE_AGENTS);
+  const [agents, setAgents] = useState<Agent[]>([GENIE_ONE_FALLBACK, ...EXTERNAL_PREVIEWS]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [convByAgent, setConvByAgent] = useState<Record<string, string | null>>({});
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [routedId, setRoutedId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -90,17 +80,12 @@ export default function App() {
 
   useEffect(() => {
     fetchWhoAmI().then(setWho).catch(() => setWho(null));
-    // Merge any configured Genie Space agents in right after Finance.
+    // Certified Databricks agents come from config; if none, keep the single
+    // Genie One tile. Genie One routes across all of them regardless.
     fetchConfig()
       .then((cfg) => {
-        const extra = cfg.genie_space_agents ?? [];
-        if (extra.length) {
-          setAgents((prev) => {
-            const previews = prev.filter((a) => a.status !== "live");
-            const live = prev.filter((a) => a.status === "live");
-            return [...live, ...extra, ...previews];
-          });
-        }
+        const certified = (cfg.genie_space_agents ?? []).map((a) => ({ ...a, status: "live" as const }));
+        if (certified.length) setAgents([...certified, ...EXTERNAL_PREVIEWS]);
       })
       .catch(() => {});
   }, []);
@@ -113,23 +98,27 @@ export default function App() {
     const q = question.trim();
     if (!q || busy) return;
 
-    const targetId = routeAgent(q, routedId, liveAgents);
-    const target = agents.find((a) => a.id === targetId) ?? liveAgents[0];
-    setRoutedId(targetId);
+    // Optimistic: light a likely certified agent right away.
+    const guessId = guessAgent(q, routedId, liveAgents);
+    setRoutedId(guessId);
     setInput("");
     setBusy(true);
-    setStatus(`Supervisor routing to ${target.name}…`);
+    setStatus(STATUS_LABEL.in_progress);
     setMessages((m) => [...m, { role: "user", content: q }]);
 
     await askGenie(
       q,
-      convByAgent[targetId] ?? null,
+      conversationId,
       {
-        onStatus: (poll, s) => {
-          setStatus(`${STATUS_LABEL[s] ?? "Working…"} (step ${poll})`);
-        },
+        onStatus: (poll, s) => setStatus(`${STATUS_LABEL[s] ?? "Working…"} (step ${poll})`),
         onDone: (payload) => {
-          setConvByAgent((c) => ({ ...c, [targetId]: payload.conversation_id }));
+          setConversationId(payload.conversation_id);
+          // Reconcile: which certified agent did Genie One actually route to?
+          const matched = liveAgents.find(
+            (a) => a.spaceId && (payload.routed_space_ids ?? []).includes(a.spaceId)
+          );
+          const finalAgent = matched ?? liveAgents.find((a) => a.id === guessId) ?? null;
+          if (finalAgent) setRoutedId(finalAgent.id);
           const content = payload.deep_link
             ? `${payload.answer}\n\n[Explore in Databricks](${payload.deep_link})`
             : payload.answer;
@@ -141,19 +130,16 @@ export default function App() {
               assets: payload.assets,
               deepLink: payload.deep_link,
               via: payload.via,
-              agentName: target.name,
-              agentIcon: target.icon,
+              agentName: finalAgent?.name,
+              agentIcon: finalAgent?.icon ?? "🧭",
             },
           ]);
         },
         onError: (message) => {
-          setMessages((m) => [
-            ...m,
-            { role: "assistant", content: `⚠️ ${message}`, error: true, agentName: target.name, agentIcon: target.icon },
-          ]);
+          setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${message}`, error: true, agentIcon: "🧭" }]);
         },
       },
-      { spaceId: target.spaceId ?? null, agentName: target.name }
+      { spaceId: null, agentName: "Genie One" } // always route via Genie One
     );
 
     setBusy(false);
@@ -162,7 +148,7 @@ export default function App() {
 
   function clearConversation() {
     setMessages([]);
-    setConvByAgent({});
+    setConversationId(null);
     setRoutedId(null);
     setStatus("");
   }
@@ -181,8 +167,7 @@ export default function App() {
             <div className="brand-text">
               <h1>Payer AI Search</h1>
               <p className="tagline">
-                Ask anything — the <strong>Supervisor</strong> routes you to the right certified
-                agent.
+                Ask anything — <strong>Genie One</strong> routes to the right certified agent.
               </p>
             </div>
           </div>
@@ -209,7 +194,7 @@ export default function App() {
               <div className="composer-box">
                 <textarea
                   value={input}
-                  placeholder="Ask a question — we'll route it to the right agent…"
+                  placeholder="Ask a question — Genie One routes it to the right agent…"
                   rows={1}
                   disabled={busy}
                   onChange={(e) => setInput(e.target.value)}
@@ -231,7 +216,7 @@ export default function App() {
               </div>
               <div className="composer-meta">
                 <span className="disclaimer">
-                  AI-generated — the Supervisor picks the agent. Verify before acting.
+                  AI-generated — Genie One picks the certified agent. Verify before acting.
                 </span>
                 {started && (
                   <button className="link-btn" onClick={clearConversation} disabled={busy}>
@@ -256,9 +241,10 @@ function AgentRail({
   routedId: string | null;
   busy: boolean;
 }) {
+  const hasCertified = agents.some((a) => a.status === "live" && a.spaceId);
   return (
     <aside className="rail">
-      <div className="rail-title">Agents</div>
+      <div className="rail-title">{hasCertified ? "Certified Genie agents" : "Agents"}</div>
       <div className="rail-list">
         {agents.map((a) => {
           const active = a.id === routedId;
@@ -266,7 +252,7 @@ function AgentRail({
             .filter(Boolean)
             .join(" ");
           return (
-            <div key={a.id} className={cls} title={a.status === "preview" ? "Coming soon" : a.poweredBy}>
+            <div key={a.id} className={cls} title={a.status === "preview" ? "Runs outside Databricks — coming soon" : "Certified · via Genie One"}>
               <span className="agent-icon" aria-hidden>
                 {a.icon}
               </span>
@@ -282,9 +268,9 @@ function AgentRail({
         })}
       </div>
       <div className="rail-foot">
-        <span className="rail-foot-title">🧭 Supervisor Agent</span>
-        Reads each question and activates the right certified agent — you never have to pick. Two
-        are live today; more are on the way.
+        <span className="rail-foot-title">🧭 Genie One (MCP)</span>
+        One governed door to every certified Genie agent in the workspace. Ask, and Genie One
+        activates the right one — no picking. Preview tiles run outside Databricks.
       </div>
     </aside>
   );
@@ -313,10 +299,10 @@ function ConnectionBadge({ who }: { who: WhoAmI | null }) {
 function Welcome({ onPick, disabled }: { onPick: (q: string) => void; disabled: boolean }) {
   return (
     <div className="welcome">
-      <span className="welcome-badge">🧭 One box · many certified agents</span>
+      <span className="welcome-badge">🧭 One box · every certified agent</span>
       <h2>Ask about your payer data</h2>
       <p className="welcome-sub">
-        Just ask. The Supervisor reads your question, activates the right certified agent, and
+        Just ask. Genie One reads your question, activates the right certified Genie agent, and
         answers — you don't choose an agent or hunt for the data.
       </p>
       <div className="examples">
@@ -343,12 +329,13 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
   }
   return (
     <div className="row assistant">
-      <span className="avatar">{msg.agentIcon ?? "🧞"}</span>
+      <span className="avatar">{msg.agentIcon ?? "🧭"}</span>
       <div className={`bubble assistant-bubble ${msg.error ? "error" : ""}`}>
         {msg.agentName && (
           <div className="answered-by">
             <span className="answered-dot" />
-            {msg.agentName} agent{msg.via ? ` · ${msg.via}` : ""}
+            {msg.agentName}
+            {msg.via ? ` · via ${msg.via}` : ""}
           </div>
         )}
         <div className="markdown">

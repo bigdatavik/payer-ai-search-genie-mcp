@@ -33,6 +33,7 @@ export interface DonePayload {
   deep_link: string;
   conversation_id: string;
   via: string;
+  routed_space_ids?: string[];
 }
 
 export interface ChatMessage {

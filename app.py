@@ -69,6 +69,21 @@ def extract_certified_assets(markdown: str) -> list[dict]:
     return sorted(seen.values(), key=lambda a: order.get(a["kind"], 9))
 
 
+_ROOM_RE = re.compile(r"/genie/rooms/([0-9a-fA-F]+)")
+
+
+def routed_space_ids(markdown: str) -> list[str]:
+    """The Genie Space IDs Genie One routed to, parsed from its answer's links.
+
+    Lets the UI light up the certified agent Genie One actually chose.
+    """
+    seen: list[str] = []
+    for sid in _ROOM_RE.findall(markdown):
+        if sid not in seen:
+            seen.append(sid)
+    return seen
+
+
 # --- credential resolution ----------------------------------------------------
 @lru_cache(maxsize=1)
 def _workspace_host() -> str:
@@ -118,6 +133,17 @@ def _genie_space_agents() -> list[dict]:
           "hints":["member","risk tier","care gap","eligibility","hcc"]}]
     """
     raw = os.environ.get("GENIE_SPACE_AGENTS")
+    if not raw:
+        # Fall back to a JSON file (keeps big rosters out of env/YAML).
+        path = os.environ.get("GENIE_SPACE_AGENTS_FILE")
+        if path:
+            if not os.path.isabs(path):
+                path = os.path.join(os.path.dirname(__file__), path)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    raw = f.read()
+            except Exception:
+                return []
     if not raw:
         return []
     try:
@@ -227,8 +253,10 @@ def ask(req: AskRequest, request: Request) -> StreamingResponse:
                                 "url": ev["deep_link"],
                             }
                         ]
+                        routed = [req.space_id]
                     else:
                         assets = extract_certified_assets(body)
+                        routed = routed_space_ids(body)
                     yield _sse(
                         "done",
                         {
@@ -237,6 +265,7 @@ def ask(req: AskRequest, request: Request) -> StreamingResponse:
                             "deep_link": ev["deep_link"],
                             "conversation_id": ev["conversation_id"],
                             "via": via,
+                            "routed_space_ids": routed,
                         },
                     )
         except errors as e:

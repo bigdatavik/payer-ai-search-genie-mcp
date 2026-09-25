@@ -37,6 +37,14 @@ resources:
         command:
           - python
           - app.py
+        env:
+          # Demo roster of certified Databricks Genie agents shown in the rail.
+          # These are DISPLAY + match entries — Genie One does the real routing;
+          # the app lights up whichever certified agent Genie One chose. Swap
+          # agents.demo.json for your workspace's certified agents (or unset to
+          # run with just the single Genie One tile).
+          - name: GENIE_SPACE_AGENTS_FILE
+            value: agents.demo.json
 
 targets:
   dev:
