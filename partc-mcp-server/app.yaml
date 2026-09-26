@@ -1,0 +1,10 @@
+# Databricks Apps runtime config for the custom MCP server.
+# uv installs deps from pyproject.toml, then runs the module. The server reads
+# $DATABRICKS_APP_PORT (set by the platform) in main() and binds 0.0.0.0,
+# serving streamable HTTP at /mcp.
+command:
+  - uv
+  - run
+  - python
+  - -m
+  - server.main

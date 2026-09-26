@@ -14,6 +14,8 @@ export async function fetchConfig(): Promise<AppConfig> {
 
 export interface AskHandlers {
   onStatus?: (poll: number, status: string) => void;
+  /** Authoritative routing signal from the orchestrator (which tool/agent it chose). */
+  onRoute?: (agentId: string | null, agentName: string, via: string) => void;
   onDone: (payload: DonePayload) => void;
   onError: (message: string) => void;
 }
@@ -94,6 +96,7 @@ function dispatchFrame(frame: string, handlers: AskHandlers): void {
   }
 
   if (event === "status") handlers.onStatus?.(data.poll, data.status);
+  else if (event === "route") handlers.onRoute?.(data.agent_id ?? null, data.agent_name, data.via);
   else if (event === "done") handlers.onDone(data as DonePayload);
   else if (event === "error") handlers.onError(data.message ?? "Unknown error");
 }

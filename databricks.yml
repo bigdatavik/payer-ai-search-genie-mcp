@@ -1,19 +1,24 @@
 # =============================================================================
-# Payer Finance AI Search (React) — Databricks Asset Bundle
+# Payer AI Search — LLM orchestrator (Databricks Asset Bundle)
 # =============================================================================
-# FastAPI backend + pre-built React SPA, calling Genie One (the workspace-wide
-# discovery MCP). Uses on-behalf-of-user auth so each user's Unity Catalog
-# permissions apply.
+# FastAPI backend + pre-built React SPA. An LLM orchestrator routes each question
+# to Genie One (certified workspace data) or a custom MCP agent (reached outside
+# Genie One). On-behalf-of-user auth so each user's Unity Catalog permissions apply.
+#
+# NOTE: bundle.name is DELIBERATELY DIFFERENT from the original
+# "payer-finance-genie-react" bundle. That gives this branch its own DABs state,
+# so deploying here creates a SEPARATE app (agent-payer-orch-dev) and never
+# touches the running agent-payer-genie-ui-dev app.
 
 bundle:
-  name: payer-finance-genie-react
+  name: payer-orchestrator
 
 variables:
   app_name:
     description: >
       Databricks App name. Must start with "agent-" to appear in the Agents list
       and be <= 30 characters.
-    default: agent-payer-genie-ui
+    default: agent-payer-orch
 
 # The React build output (static/) is gitignored, so force-include it in the
 # bundle sync — otherwise the deployed app would ship without a frontend.
@@ -24,38 +29,42 @@ sync:
 
 resources:
   apps:
-    payer_finance_genie_react:
+    payer_orchestrator:
       name: ${var.app_name}
-      description: "Payer Finance AI Search — a Genie One front door (React + FastAPI)."
+      description: "Payer AI Search — LLM orchestrator routing Genie One + custom MCP agents."
       source_code_path: ./
-      # On-behalf-of-user: Genie runs with the signed-in user's UC permissions.
+      # On-behalf-of-user: Genie, the Foundation Model, and custom MCP calls all
+      # run with the signed-in user's permissions.
       user_api_scopes:
         - genie
-      # Runtime config for DAB deploys (mirrors app.yaml). app.py binds
-      # $DATABRICKS_APP_PORT on 0.0.0.0 in its __main__ block.
+        - serving.serving-endpoints
       config:
         command:
           - python
           - app.py
         env:
-          # Demo roster of certified Databricks Genie agents shown in the rail.
-          # These are DISPLAY + match entries — Genie One does the real routing;
-          # the app lights up whichever certified agent Genie One chose. Swap
-          # agents.demo.json for your workspace's certified agents (or unset to
-          # run with just the single Genie One tile).
+          # Certified Genie agents shown in the rail + matched to Genie One's
+          # routing (Genie One does the real routing across the workspace).
           - name: GENIE_SPACE_AGENTS_FILE
             value: agents.demo.json
+          # Custom MCP agents reached OUTSIDE Genie One — the orchestrator exposes
+          # each as a tool the router LLM can pick, and calls it over its /mcp URL.
+          - name: EXTERNAL_MCP_AGENTS_FILE
+            value: external_mcp.demo.json
+          # Foundation Model that does the routing (tool selection).
+          - name: ORCHESTRATOR_MODEL
+            value: databricks-claude-sonnet-4-6
 
 targets:
   dev:
     mode: development
     default: true
     variables:
-      app_name: agent-payer-genie-ui-dev
+      app_name: agent-payer-orch-dev
 
   prod:
     mode: production
     variables:
-      app_name: agent-payer-genie-ui
+      app_name: agent-payer-orch
     workspace:
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}

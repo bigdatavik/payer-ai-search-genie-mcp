@@ -1,24 +1,25 @@
-"""Payer Finance AI Search — FastAPI backend + React SPA over Genie One.
+"""Payer Finance AI Search — FastAPI backend + React SPA with an LLM orchestrator.
 
 A single-process Databricks App: FastAPI serves both the JSON/SSE API under
 ``/api`` and the pre-built React single-page app (from ``static/``). Keeping the
 frontend and backend in one process/port means there is no cross-origin call, so
 we sidestep the Databricks Apps reverse-proxy CORS limitation entirely.
 
-The "brain" is **Genie One** — Databricks' workspace-wide discovery MCP endpoint
-(``/api/2.0/mcp/genie``). No asset IDs are configured here: Genie One discovers
-and routes to whatever certified Genie agents / dashboards / metric views exist
-in the workspace this app runs in, so it deploys to *any* workspace unchanged.
+Routing is **agentic**, not rule-based: an LLM **orchestrator** (see
+``orchestrator.py``) is given each backend as a tool — **Genie One** (the
+workspace-wide certified-agent router) and each configured **custom MCP agent**
+(e.g. the Part C Reporting agent behind its own MCP server) — and the model picks
+which to call. Router-only: we stream the chosen agent's answer verbatim, and the
+tool the model picked tells the UI which tile to light.
 
 Answers stream back over Server-Sent Events so the UI shows live progress and a
-long Genie poll never trips the proxy's idle timeout.
+long poll never trips the proxy's idle timeout.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from functools import lru_cache
 from typing import Optional
 
@@ -29,59 +30,13 @@ from pydantic import BaseModel
 
 from databricks.sdk import WorkspaceClient
 
-from genie_one import GenieOneClient, GenieOneError
 from genie_space import GenieSpaceClient, GenieSpaceError
+from genie_parse import extract_certified_assets, routed_space_ids
+from orchestrator import Orchestrator
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 app = FastAPI(title="Payer Finance AI Search")
-
-
-# --- certified-asset extraction -----------------------------------------------
-# Markdown link matcher: [label](url)
-_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
-
-
-def extract_certified_assets(markdown: str) -> list[dict]:
-    """Pull the certified assets Genie One cited out of its markdown answer.
-
-    Genie One embeds links to the assets it used — Genie agents
-    (``/genie/rooms/``), dashboards (``/dashboardsv3/``), and per-query results.
-    We classify and de-duplicate them so the UI can show *which* certified asset
-    answered — the "one front door, know the source" point.
-    """
-    seen: dict[str, dict] = {}
-    for label, url in _LINK_RE.findall(markdown):
-        if "/genie/rooms/" in url:
-            kind, icon = "Genie agent", "🧞"
-        elif "/dashboardsv3/" in url or "/dashboards/" in url:
-            kind, icon = "Dashboard", "📊"
-        elif "#embed-query" in url or "/sql/" in url:
-            kind, icon = "Query result", "🔎"
-        elif "/one/chat/threads/" in url:
-            continue  # the "Explore in Databricks" deep link — shown separately
-        else:
-            kind, icon = "Source", "📄"
-        key = f"{kind}:{label}"
-        if key not in seen:
-            seen[key] = {"kind": kind, "icon": icon, "label": label, "url": url}
-    order = {"Genie agent": 0, "Dashboard": 1, "Query result": 2, "Source": 3}
-    return sorted(seen.values(), key=lambda a: order.get(a["kind"], 9))
-
-
-_ROOM_RE = re.compile(r"/genie/rooms/([0-9a-fA-F]+)")
-
-
-def routed_space_ids(markdown: str) -> list[str]:
-    """The Genie Space IDs Genie One routed to, parsed from its answer's links.
-
-    Lets the UI light up the certified agent Genie One actually chose.
-    """
-    seen: list[str] = []
-    for sid in _ROOM_RE.findall(markdown):
-        if sid not in seen:
-            seen.append(sid)
-    return seen
 
 
 # --- credential resolution ----------------------------------------------------
@@ -98,15 +53,12 @@ def _resolve_token(request: Request) -> tuple[str, str]:
     """Return (token, auth_mode).
 
     Prefer on-behalf-of-user: Databricks Apps forwards the signed-in user's token
-    in ``X-Forwarded-Access-Token``, so Genie runs with that user's Unity Catalog
-    permissions. Fall back to the app service principal / local profile creds.
+    in ``X-Forwarded-Access-Token``, so Genie/MCP run with that user's Unity
+    Catalog permissions. Fall back to the app service principal / local profile.
     """
     token = request.headers.get("x-forwarded-access-token")
     if token:
         return token, "on-behalf-of-user"
-    # App service principal / local profile creds. Degrade gracefully when no
-    # credentials are configured (e.g. local dev without a profile) so the UI
-    # still loads with a "not connected" badge instead of a 500.
     try:
         auth = WorkspaceClient().config.authenticate() or {}
         return auth.get("Authorization", "").removeprefix("Bearer ").strip(), "service-principal"
@@ -119,23 +71,12 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-# --- API ----------------------------------------------------------------------
-def _genie_space_agents() -> list[dict]:
-    """Optional extra "live" agents backed by specific Genie Spaces.
-
-    Read from the ``GENIE_SPACE_AGENTS`` env var (a JSON list) so the app stays
-    portable — no workspace-specific space IDs are baked into the source. Each
-    entry needs at least ``name`` and ``space_id``; ``hints`` (lowercase
-    keywords) drive the Supervisor's auto-routing. Example value:
-
-        [{"id":"member360","name":"Member 360","icon":"👤",
-          "blurb":"Eligibility & risk","space_id":"<genie-space-id>",
-          "hints":["member","risk tier","care gap","eligibility","hcc"]}]
-    """
-    raw = os.environ.get("GENIE_SPACE_AGENTS")
+# --- roster config ------------------------------------------------------------
+def _load_roster(env_var: str, file_var: str) -> list:
+    """Load a JSON roster from an env var, or a file named by another env var."""
+    raw = os.environ.get(env_var)
     if not raw:
-        # Fall back to a JSON file (keeps big rosters out of env/YAML).
-        path = os.environ.get("GENIE_SPACE_AGENTS_FILE")
+        path = os.environ.get(file_var)
         if path:
             if not os.path.isabs(path):
                 path = os.path.join(os.path.dirname(__file__), path)
@@ -150,10 +91,18 @@ def _genie_space_agents() -> list[dict]:
         data = json.loads(raw)
     except Exception:
         return []
-    if not isinstance(data, list):
-        return []
+    return data if isinstance(data, list) else []
+
+
+def _genie_space_agents() -> list[dict]:
+    """Optional "live" tiles backed by certified Genie Spaces (display + match).
+
+    Read from ``GENIE_SPACE_AGENTS`` (JSON) or ``GENIE_SPACE_AGENTS_FILE`` (path)
+    so the app stays portable — no workspace-specific IDs baked into source.
+    Genie One does the real routing; ``space_id`` is used only to light the tile.
+    """
     out: list[dict] = []
-    for a in data:
+    for a in _load_roster("GENIE_SPACE_AGENTS", "GENIE_SPACE_AGENTS_FILE"):
         if not isinstance(a, dict) or not a.get("space_id") or not a.get("name"):
             continue
         out.append(
@@ -172,17 +121,50 @@ def _genie_space_agents() -> list[dict]:
     return out
 
 
+def _external_mcp_agents() -> list[dict]:
+    """Live tiles backed by custom MCP servers reached OUTSIDE Genie One.
+
+    Read from ``EXTERNAL_MCP_AGENTS`` (JSON) or ``EXTERNAL_MCP_AGENTS_FILE``
+    (path). Each entry needs ``name``, ``mcp_url``, and ``tool_name``; the
+    orchestrator exposes each as a tool the router LLM can pick, and calls the
+    tool over the network against the deployed ``/mcp`` endpoint.
+    """
+    out: list[dict] = []
+    for a in _load_roster("EXTERNAL_MCP_AGENTS", "EXTERNAL_MCP_AGENTS_FILE"):
+        if not isinstance(a, dict) or not a.get("mcp_url") or not a.get("tool_name") or not a.get("name"):
+            continue
+        out.append(
+            {
+                "id": a.get("id") or str(a["name"]).lower().replace(" ", "-"),
+                "name": a["name"],
+                "icon": a.get("icon") or "🛰️",
+                "blurb": a.get("blurb") or "Custom MCP agent",
+                "status": "live",
+                "external": True,
+                "poweredBy": "Custom MCP",
+                "mcp_url": a["mcp_url"],
+                "tool_name": a["tool_name"],
+                "description": a.get("description"),
+                "deep_link": a.get("deep_link"),
+                "example": a.get("example"),
+            }
+        )
+    return out
+
+
 @app.get("/api/config")
 def config() -> dict:
     """Roster config the frontend merges in at startup (portable, no rebuild)."""
-    return {"genie_space_agents": _genie_space_agents()}
+    return {
+        "genie_space_agents": _genie_space_agents(),
+        "external_mcp_agents": _external_mcp_agents(),
+    }
 
 
 class AskRequest(BaseModel):
     question: str
     conversation_id: Optional[str] = None
-    # When set, route to this specific Genie Space (a second "live" agent)
-    # instead of Genie One discovery. agent_name is just a display label.
+    # When set, bypass the orchestrator and route straight to this Genie Space.
     space_id: Optional[str] = None
     agent_name: Optional[str] = None
 
@@ -211,7 +193,7 @@ def whoami(request: Request) -> dict:
 
 @app.post("/api/ask")
 def ask(req: AskRequest, request: Request) -> StreamingResponse:
-    """Stream Genie One's answer for a question over Server-Sent Events."""
+    """Stream an answer over SSE — via the LLM orchestrator, or a direct space."""
     host = _workspace_host()
     token, _auth_mode = _resolve_token(request)
 
@@ -228,57 +210,71 @@ def ask(req: AskRequest, request: Request) -> StreamingResponse:
                 },
             )
             return
-        # Route: a specific Genie Space (second live agent) vs Genie One discovery.
-        if req.space_id:
-            via = req.agent_name or "Genie agent"
-            client: object = GenieSpaceClient(host=host, token=token, space_id=req.space_id)
-            errors = (GenieSpaceError,)
-        else:
-            via = "Genie One"
-            client = GenieOneClient(host=host, token=token)
-            errors = (GenieOneError,)
 
+        # Optional escape hatch: route straight to a specific Genie Space.
+        if req.space_id:
+            yield from _stream_direct_space(host, token, req)
+            return
+
+        # Default path: the LLM orchestrator picks the tool (Genie One vs a
+        # custom MCP agent) and we stream the chosen agent's answer verbatim.
+        orch = Orchestrator(host=host, token=token, external_agents=_external_mcp_agents())
         try:
-            for ev in client.iter_ask(req.question, conversation_id=req.conversation_id):  # type: ignore[attr-defined]
-                if ev["type"] == "status":
+            for ev in orch.iter_ask(req.question, conversation_id=req.conversation_id):
+                t = ev["type"]
+                if t == "route":
+                    yield _sse("route", {"agent_id": ev["agent_id"], "agent_name": ev["agent_name"], "via": ev["via"]})
+                elif t == "status":
                     yield _sse("status", {"poll": ev["poll"], "status": ev["status"]})
-                elif ev["type"] == "answer":
-                    body = ev["final_answer"] or "_(Genie returned no answer text.)_"
-                    if req.space_id:
-                        # The space itself is the certified asset that answered.
-                        assets = [
-                            {
-                                "kind": "Genie agent",
-                                "icon": "🧞",
-                                "label": via,
-                                "url": ev["deep_link"],
-                            }
-                        ]
-                        routed = [req.space_id]
-                    else:
-                        assets = extract_certified_assets(body)
-                        routed = routed_space_ids(body)
+                elif t == "answer":
                     yield _sse(
                         "done",
                         {
-                            "answer": body,
-                            "assets": assets,
+                            "answer": ev["final_answer"],
+                            "assets": ev["assets"],
                             "deep_link": ev["deep_link"],
                             "conversation_id": ev["conversation_id"],
-                            "via": via,
-                            "routed_space_ids": routed,
+                            "via": ev["via"],
+                            "routed_space_ids": ev["routed_space_ids"],
+                            "agent_id": ev["agent_id"],
                         },
                     )
-        except errors as e:
-            yield _sse("error", {"message": f"{via} error: {e}"})
+                elif t == "error":
+                    yield _sse("error", {"message": ev["message"]})
         except Exception as e:  # noqa: BLE001 - surface anything else cleanly
-            yield _sse("error", {"message": f"Unexpected error contacting {via}: {e}"})
+            yield _sse("error", {"message": f"Unexpected orchestrator error: {e}"})
 
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _stream_direct_space(host: str, token: str, req: AskRequest):
+    """Route straight to one Genie Space (bypasses the orchestrator)."""
+    via = req.agent_name or "Genie agent"
+    client = GenieSpaceClient(host=host, token=token, space_id=req.space_id)
+    try:
+        for ev in client.iter_ask(req.question, conversation_id=req.conversation_id):
+            if ev["type"] == "status":
+                yield _sse("status", {"poll": ev["poll"], "status": ev["status"]})
+            elif ev["type"] == "answer":
+                body = ev["final_answer"] or "_(Genie returned no answer text.)_"
+                yield _sse(
+                    "done",
+                    {
+                        "answer": body,
+                        "assets": [{"kind": "Genie agent", "icon": "🧞", "label": via, "url": ev["deep_link"]}],
+                        "deep_link": ev["deep_link"],
+                        "conversation_id": ev["conversation_id"],
+                        "via": via,
+                        "routed_space_ids": [req.space_id],
+                        "agent_id": None,
+                    },
+                )
+    except GenieSpaceError as e:
+        yield _sse("error", {"message": f"{via} error: {e}"})
 
 
 # --- static SPA (mounted last so /api routes win) -----------------------------

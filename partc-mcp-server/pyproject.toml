@@ -1,0 +1,14 @@
+[project]
+name = "partc-mcp-server"
+version = "0.1.0"
+description = "Custom MCP server fronting the PartC-Reporting-Genie agent as a tool."
+requires-python = ">=3.11"
+dependencies = [
+    # Pin to MCP v1: v2 renamed FastMCP -> MCPServer. The Databricks Apps
+    # Hello-World MCP template and docs use the v1 FastMCP API.
+    "mcp>=1.2.0,<2",
+    "databricks-sdk>=0.40.0",
+]
+
+# No [build-system]/[project.scripts]: app.yaml runs `uv run python -m server.main`,
+# so uv treats this as a dependencies-only project (no package build needed).

@@ -4,3 +4,7 @@
 fastapi
 uvicorn[standard]
 databricks-sdk
+# OpenAI-compatible client for the Foundation Model routing call.
+openai
+# MCP client (v1 API) — calls custom MCP servers with an OBO bearer token.
+mcp>=1.9,<2

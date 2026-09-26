@@ -24,8 +24,24 @@ export interface SpaceAgentConfig {
   example?: string | null;
 }
 
+export interface ExternalMcpAgentConfig {
+  id: string;
+  name: string;
+  icon: string;
+  blurb: string;
+  status: "live";
+  external: true;
+  poweredBy: string;
+  mcp_url: string;
+  tool_name: string;
+  description?: string | null;
+  deep_link?: string | null;
+  example?: string | null;
+}
+
 export interface AppConfig {
   genie_space_agents: SpaceAgentConfig[];
+  external_mcp_agents: ExternalMcpAgentConfig[];
 }
 
 export interface DonePayload {
@@ -35,6 +51,7 @@ export interface DonePayload {
   conversation_id: string;
   via: string;
   routed_space_ids?: string[];
+  agent_id?: string | null;
 }
 
 export interface ChatMessage {

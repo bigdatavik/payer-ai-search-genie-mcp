@@ -9,6 +9,7 @@ const STATUS_LABEL: Record<string, string> = {
   submitted: "Sending to the agent…",
   filtering_context: "Finding the right certified agent…",
   asking_ai: "Generating SQL…",
+  asking_agent: "Asking the agent over its MCP endpoint…",
   pending_warehouse: "Waiting for the warehouse…",
   fetching_metadata: "Gathering context…",
   executing_query: "Running the query…",
@@ -24,8 +25,8 @@ interface Agent {
   /** Genie Space this certified agent corresponds to — used to match which
    *  agent Genie One routed to (NOT to call it directly). */
   spaceId?: string;
-  /** lowercase keywords for the optimistic highlight before Genie One replies */
-  hints?: string[];
+  /** true = reached OUTSIDE Genie One via its own custom MCP server. */
+  external?: boolean;
   /** a starter question shown on the welcome screen */
   example?: string | null;
 }
@@ -39,26 +40,13 @@ const GENIE_ONE_FALLBACK: Agent = {
   status: "live",
 };
 
-/** External agents that run OUTSIDE Databricks — shown as previews. */
+/** External agents that run OUTSIDE Databricks — shown as previews until wired. */
 const EXTERNAL_PREVIEWS: Agent[] = [
   { id: "claims", icon: "🧾", name: "Claims", blurb: "Status, denials & recovery", status: "preview" },
   { id: "priorauth", icon: "✅", name: "Prior Authorization", blurb: "Auth & utilization review", status: "preview" },
   { id: "network", icon: "🏥", name: "Provider Network", blurb: "Contracts & adequacy", status: "preview" },
   { id: "fwa", icon: "🛡️", name: "Fraud, Waste & Abuse", blurb: "Anomalies & SIU leads", status: "preview" },
 ];
-
-/** Optimistic guess (before Genie One answers) of which certified agent will
- *  handle the question, so a tile lights up immediately. Genie One makes the
- *  real decision; we reconcile to it when the answer returns. */
-function guessAgent(question: string, lastId: string | null, liveAgents: Agent[]): string | null {
-  const q = question.toLowerCase();
-  for (const a of liveAgents) {
-    if (a.hints?.some((h) => q.includes(h))) return a.id;
-  }
-  // sticky to the last routed certified agent for ambiguous follow-ups
-  if (lastId && liveAgents.some((a) => a.id === lastId)) return lastId;
-  return liveAgents.length === 1 ? liveAgents[0].id : null;
-}
 
 /** Fallback starters when no certified agents are configured (portable default). */
 const DEFAULT_EXAMPLES = [
@@ -87,12 +75,22 @@ export default function App() {
 
   useEffect(() => {
     fetchWhoAmI().then(setWho).catch(() => setWho(null));
-    // Certified Databricks agents come from config; if none, keep the single
-    // Genie One tile. Genie One routes across all of them regardless.
+    // Certified Databricks agents (routed by Genie One) + custom-MCP agents
+    // (reached OUTSIDE Genie One) both come from config, so the app is portable.
     fetchConfig()
       .then((cfg) => {
         const certified = (cfg.genie_space_agents ?? []).map((a) => ({ ...a, status: "live" as const }));
-        if (certified.length) setAgents([...certified, ...EXTERNAL_PREVIEWS]);
+        const external = (cfg.external_mcp_agents ?? []).map((a) => ({
+          id: a.id,
+          icon: a.icon,
+          name: a.name,
+          blurb: a.blurb,
+          status: "live" as const,
+          external: true,
+          example: a.example,
+        }));
+        const base = certified.length ? certified : [GENIE_ONE_FALLBACK];
+        setAgents([...base, ...external, ...EXTERNAL_PREVIEWS]);
       })
       .catch(() => {});
   }, []);
@@ -105,9 +103,8 @@ export default function App() {
     const q = question.trim();
     if (!q || busy) return;
 
-    // Optimistic: light a likely certified agent right away.
-    const guessId = guessAgent(q, routedId, liveAgents);
-    setRoutedId(guessId);
+    // No optimistic guess — the orchestrator LLM tells us the route authoritatively.
+    setRoutedId(null);
     setInput("");
     setBusy(true);
     setStatus(STATUS_LABEL.in_progress);
@@ -118,13 +115,20 @@ export default function App() {
       conversationId,
       {
         onStatus: (poll, s) => setStatus(`${STATUS_LABEL[s] ?? "Working…"} (step ${poll})`),
+        // Authoritative routing: light the chosen agent's tile immediately.
+        // For an external/MCP agent this is the final tile; for Genie One we
+        // refine to the specific certified agent from the answer's citations.
+        onRoute: (agentId) => {
+          if (agentId && agents.some((a) => a.id === agentId)) setRoutedId(agentId);
+        },
         onDone: (payload) => {
           setConversationId(payload.conversation_id);
-          // Reconcile: which certified agent did Genie One actually route to?
-          const matched = liveAgents.find(
-            (a) => a.spaceId && (payload.routed_space_ids ?? []).includes(a.spaceId)
-          );
-          const finalAgent = matched ?? liveAgents.find((a) => a.id === guessId) ?? null;
+          // Reconcile to the tile that actually answered: a certified Genie
+          // agent (matched by routed space id) or the routed agent id itself.
+          const matched =
+            liveAgents.find((a) => a.spaceId && (payload.routed_space_ids ?? []).includes(a.spaceId)) ??
+            agents.find((a) => a.id === payload.agent_id);
+          const finalAgent = matched ?? null;
           if (finalAgent) setRoutedId(finalAgent.id);
           const content = payload.deep_link
             ? `${payload.answer}\n\n[Explore in Databricks](${payload.deep_link})`
@@ -174,7 +178,7 @@ export default function App() {
             <div className="brand-text">
               <h1>Payer AI Search</h1>
               <p className="tagline">
-                Ask anything — <strong>Genie One</strong> routes to the right certified agent.
+                Ask anything — an <strong>orchestrator</strong> routes to Genie One or a specialized MCP agent.
               </p>
             </div>
           </div>
@@ -258,8 +262,23 @@ function AgentRail({
           const cls = ["agent", active ? "active" : "", active && busy ? "answering" : "", busy && !active ? "dim" : ""]
             .filter(Boolean)
             .join(" ");
+          const title = a.external
+            ? "Reached outside Genie One via its own custom MCP server"
+            : a.status === "preview"
+            ? "Runs outside Databricks — coming soon"
+            : "Certified · via Genie One";
+          const statusLabel = active
+            ? busy
+              ? "Answering…"
+              : "Active"
+            : a.external
+            ? "MCP"
+            : a.status === "live"
+            ? "Live"
+            : "Preview";
+          const statusClass = active ? "active" : a.external ? "external" : a.status;
           return (
-            <div key={a.id} className={cls} title={a.status === "preview" ? "Runs outside Databricks — coming soon" : "Certified · via Genie One"}>
+            <div key={a.id} className={cls} title={title}>
               <span className="agent-icon" aria-hidden>
                 {a.icon}
               </span>
@@ -267,17 +286,16 @@ function AgentRail({
                 <span className="agent-name">{a.name}</span>
                 <span className="agent-blurb">{a.blurb}</span>
               </span>
-              <span className={`agent-status ${active ? "active" : a.status}`}>
-                {active ? (busy ? "Answering…" : "Active") : a.status === "live" ? "Live" : "Preview"}
-              </span>
+              <span className={`agent-status ${statusClass}`}>{statusLabel}</span>
             </div>
           );
         })}
       </div>
       <div className="rail-foot">
-        <span className="rail-foot-title">🧭 Genie One (MCP)</span>
-        One governed door to every certified Genie agent in the workspace. Ask, and Genie One
-        activates the right one — no picking. Preview tiles run outside Databricks.
+        <span className="rail-foot-title">🧭 LLM orchestrator</span>
+        Ask anything — an LLM picks the right agent: <strong>Genie One</strong> for certified
+        workspace data, or a <strong>◆ custom MCP</strong> agent reached outside Genie One. No
+        picking, no keywords. Preview tiles are external agents not yet wired.
       </div>
     </aside>
   );

@@ -339,6 +339,16 @@ body {
   color: var(--text-dim);
   background: var(--surface-2);
 }
+/* Live agent reached OUTSIDE Genie One via its own custom MCP server. */
+.agent-status.external {
+  color: #7c3aed;
+  background: color-mix(in srgb, #7c3aed 14%, transparent);
+}
+.agent-status.external::before {
+  content: "◆ ";
+  font-size: 8px;
+  vertical-align: middle;
+}
 .agent-status.active {
   color: #fff;
   background: var(--ok);

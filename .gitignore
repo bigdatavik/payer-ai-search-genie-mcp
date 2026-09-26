@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-test/
 venv/
 
 # --- Node / frontend build ----------------------------------------------------
