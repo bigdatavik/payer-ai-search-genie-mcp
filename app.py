@@ -66,6 +66,22 @@ def _resolve_token(request: Request) -> tuple[str, str]:
         return "", "service-principal"
 
 
+def _app_sp_token() -> str:
+    """Mint the app's *service-principal* bearer token (M2M).
+
+    Used for the governed UC MCP Service leg (the NBA cross-workspace agent):
+    that securable is invoked as a service identity granted EXECUTE on it, not
+    with the caller's down-scoped OBO token. Databricks Apps inject the SP's
+    OAuth creds, so ``WorkspaceClient().config.authenticate()`` returns an SP
+    token with full API scope. Returns "" if unavailable (e.g. local dev).
+    """
+    try:
+        auth = WorkspaceClient().config.authenticate() or {}
+        return auth.get("Authorization", "").removeprefix("Bearer ").strip()
+    except Exception:
+        return ""
+
+
 def _sse(event: str, data: dict) -> str:
     """Format one Server-Sent Event frame."""
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -133,6 +149,13 @@ def _external_mcp_agents() -> list[dict]:
     for a in _load_roster("EXTERNAL_MCP_AGENTS", "EXTERNAL_MCP_AGENTS_FILE"):
         if not isinstance(a, dict) or not a.get("mcp_url") or not a.get("tool_name") or not a.get("name"):
             continue
+        # kind distinguishes the two external scenarios (for labels/badges only —
+        # the orchestrator calls both the same way, over MCP with the OBO token):
+        #   "custom_mcp"  -> a custom MCP server hosted as a Databricks App (direct /mcp URL)
+        #   "mcp_service" -> a governed UC MCP Service (/ai-gateway/mcp-services/...),
+        #                    which can front an agent running under MCP in ANOTHER workspace
+        kind = a.get("kind") or "custom_mcp"
+        powered_by = "UC MCP Service" if kind == "mcp_service" else "Custom MCP"
         out.append(
             {
                 "id": a.get("id") or str(a["name"]).lower().replace(" ", "-"),
@@ -141,7 +164,8 @@ def _external_mcp_agents() -> list[dict]:
                 "blurb": a.get("blurb") or "Custom MCP agent",
                 "status": "live",
                 "external": True,
-                "poweredBy": "Custom MCP",
+                "kind": kind,
+                "poweredBy": powered_by,
                 "mcp_url": a["mcp_url"],
                 "tool_name": a["tool_name"],
                 "description": a.get("description"),
@@ -218,7 +242,12 @@ def ask(req: AskRequest, request: Request) -> StreamingResponse:
 
         # Default path: the LLM orchestrator picks the tool (Genie One vs a
         # custom MCP agent) and we stream the chosen agent's answer verbatim.
-        orch = Orchestrator(host=host, token=token, external_agents=_external_mcp_agents())
+        orch = Orchestrator(
+            host=host,
+            token=token,
+            external_agents=_external_mcp_agents(),
+            sp_token=_app_sp_token(),
+        )
         try:
             for ev in orch.iter_ask(req.question, conversation_id=req.conversation_id):
                 t = ev["type"]

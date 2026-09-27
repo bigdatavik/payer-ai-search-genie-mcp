@@ -33,11 +33,22 @@ resources:
       name: ${var.app_name}
       description: "Payer AI Search — LLM orchestrator routing Genie One + custom MCP agents."
       source_code_path: ./
-      # On-behalf-of-user: Genie, the Foundation Model, and custom MCP calls all
-      # run with the signed-in user's permissions.
+      # On-behalf-of-user: Genie, the Foundation Model, and MCP calls all run with
+      # the signed-in user's permissions.
+      #   - genie                    → Genie One (managed Genie MCP)
+      #   - serving.serving-endpoints → the Foundation Model routing call
+      #   - ai-gateway               → reach the Unity Gateway /ai-gateway/mcp-services endpoint
+      #   - catalog.*                → USE/traverse + EXECUTE the connection-backed UC MCP
+      #     Service securable (payer_catalog_vm.mcp.nba_payer_genie). Without these the
+      #     down-scoped OBO token gets 403 Forbidden from the MCP Service (ai-gateway alone
+      #     authorizes the endpoint, not the underlying UC connection securable).
       user_api_scopes:
         - genie
         - serving.serving-endpoints
+        - ai-gateway
+        - catalog.connections
+        - catalog.catalogs
+        - catalog.schemas
       config:
         command:
           - python

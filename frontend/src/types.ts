@@ -31,6 +31,8 @@ export interface ExternalMcpAgentConfig {
   blurb: string;
   status: "live";
   external: true;
+  /** "custom_mcp" (Databricks App /mcp) or "mcp_service" (governed UC MCP Service). */
+  kind?: string;
   poweredBy: string;
   mcp_url: string;
   tool_name: string;

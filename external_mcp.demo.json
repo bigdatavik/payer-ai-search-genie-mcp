@@ -4,10 +4,23 @@
     "name": "Part C Reporting",
     "icon": "🛰️",
     "blurb": "Medicare Part C CMS compliance",
+    "kind": "custom_mcp",
     "mcp_url": "https://mcp-partc-reporting-7474651608287314.aws.databricksapps.com/mcp",
     "tool_name": "ask_partc_reporting",
     "description": "Medicare Part C CMS compliance reporting: timeliness metrics, TI accuracy, data quality scores by contract, publish-readiness status, validation failures, per-contract compliance rates, and CY2027 regulatory changes. A specialized agent NOT covered by Genie One.",
     "deep_link": "https://fevm-serverless-mwelio-humana.cloud.databricks.com/genie/rooms/01f14c0eea5a133c88b42273a0a9b4e1",
     "example": "What is our data quality score by contract?"
+  },
+  {
+    "id": "nba",
+    "name": "NBA Payer Genie",
+    "icon": "🎯",
+    "blurb": "Member 360 & Next Best Action (another workspace)",
+    "kind": "mcp_service",
+    "mcp_url": "https://fevm-serverless-mwelio-humana.cloud.databricks.com/ai-gateway/mcp-services/payer_catalog_vm.mcp.nba_payer_genie",
+    "tool_name": "ask_nba_payer_genie",
+    "description": "Member 360 and Next Best Action (NBA) for the payer population: member profiles, clinical risk tiers, care gaps, engagement/outreach, and recommended next best actions per member. This agent runs on a Genie agent in ANOTHER Databricks workspace, reached through a governed Unity Catalog MCP Service.",
+    "deep_link": "https://fevm-humana-nba-genie.cloud.databricks.com/genie/rooms/01f1a2271a4618a8be35471ddcfb87f6",
+    "example": "What is the next best action for our highest-risk members?"
   }
 ]

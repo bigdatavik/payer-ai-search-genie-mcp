@@ -96,9 +96,15 @@ class Orchestrator:
         token: str,
         external_agents: Optional[list[dict]] = None,
         model: str = DEFAULT_MODEL,
+        sp_token: Optional[str] = None,
     ):
         self._host = host.rstrip("/")
         self._token = token
+        # App service-principal token (M2M). Used ONLY for governed UC MCP
+        # Service calls, which are invoked as a granted service identity rather
+        # than with the caller's down-scoped OBO token. Falls back to the OBO
+        # token when unset (e.g. local dev with a full-scope token).
+        self._sp_token = sp_token or None
         self._model = model
         self._external = external_agents or []
         # Index external agents by the tool name the model will call.
@@ -141,11 +147,12 @@ class Orchestrator:
             yield from self._run_genie_one(q, conversation_id)
         elif name in self._by_tool:
             agent = self._by_tool[name]
+            via_label = "UC MCP Service" if agent.get("kind") == "mcp_service" else "custom MCP"
             yield {
                 "type": "route",
                 "agent_id": agent["id"],
                 "agent_name": agent["name"],
-                "via": f"{agent['name']} (custom MCP)",
+                "via": f"{agent['name']} ({via_label})",
             }
             yield from self._run_external(agent, q)
         else:
@@ -198,14 +205,27 @@ class Orchestrator:
             yield {"type": "error", "message": f"Genie One error: {e}"}
 
     def _run_external(self, agent: dict, question: str) -> Iterator[dict]:
-        """Call a custom MCP server's tool over the network (bearer / OBO)."""
+        """Call an external MCP tool over the network with the OBO bearer token.
+
+        Works the same for both external kinds — the only difference is the URL:
+        a custom MCP server's ``/mcp`` (Databricks App) or a governed UC MCP
+        Service's ``/ai-gateway/mcp-services/...`` (which may front an agent
+        running under MCP in another workspace).
+        """
+        is_service = agent.get("kind") == "mcp_service"
+        via_label = "UC MCP Service" if is_service else "custom MCP"
+        # A governed UC MCP Service is invoked as the app service principal
+        # (granted EXECUTE on the service securable). Its underlying M2M
+        # connection handles auth to the other workspace. A custom MCP server
+        # (a Databricks App) is reached with the caller's OBO token.
+        call_token = self._sp_token if (is_service and self._sp_token) else self._token
         yield {"type": "status", "poll": 1, "status": "asking_agent"}
         try:
             from custom_mcp import call_tool_sync
 
-            text = call_tool_sync(agent["mcp_url"], self._token, agent["tool_name"], {"question": question})
+            text = call_tool_sync(agent["mcp_url"], call_token, agent["tool_name"], {"question": question})
         except Exception as e:  # noqa: BLE001
-            yield {"type": "error", "message": f"{agent['name']} (custom MCP) error: {e}"}
+            yield {"type": "error", "message": f"{agent['name']} ({via_label}) error: {e}"}
             return
 
         # A single "answered via" chip; link to the underlying agent if configured.
@@ -224,8 +244,8 @@ class Orchestrator:
             "final_answer": text,
             "assets": assets,
             "deep_link": agent.get("deep_link", ""),
-            "conversation_id": "",  # v1: custom MCP calls are single-turn (no threading)
-            "via": f"{agent['name']} (custom MCP)",
+            "conversation_id": "",  # v1: external MCP calls are single-turn (no threading)
+            "via": f"{agent['name']} ({via_label})",
             "routed_space_ids": [],
             "agent_id": agent["id"],
         }

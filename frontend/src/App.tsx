@@ -25,8 +25,10 @@ interface Agent {
   /** Genie Space this certified agent corresponds to — used to match which
    *  agent Genie One routed to (NOT to call it directly). */
   spaceId?: string;
-  /** true = reached OUTSIDE Genie One via its own custom MCP server. */
+  /** true = reached OUTSIDE Genie One over MCP (custom MCP server or UC MCP Service). */
   external?: boolean;
+  /** how an external agent is reached, e.g. "Custom MCP" or "UC MCP Service". */
+  poweredBy?: string;
   /** a starter question shown on the welcome screen */
   example?: string | null;
 }
@@ -87,6 +89,7 @@ export default function App() {
           blurb: a.blurb,
           status: "live" as const,
           external: true,
+          poweredBy: a.poweredBy,
           example: a.example,
         }));
         const base = certified.length ? certified : [GENIE_ONE_FALLBACK];
@@ -262,8 +265,11 @@ function AgentRail({
           const cls = ["agent", active ? "active" : "", active && busy ? "answering" : "", busy && !active ? "dim" : ""]
             .filter(Boolean)
             .join(" ");
+          const isService = a.poweredBy === "UC MCP Service";
           const title = a.external
-            ? "Reached outside Genie One via its own custom MCP server"
+            ? isService
+              ? "Reached via a governed UC MCP Service (agent runs under MCP in another workspace)"
+              : "Reached outside Genie One via its own custom MCP server"
             : a.status === "preview"
             ? "Runs outside Databricks — coming soon"
             : "Certified · via Genie One";
@@ -272,7 +278,9 @@ function AgentRail({
               ? "Answering…"
               : "Active"
             : a.external
-            ? "MCP"
+            ? isService
+              ? "MCP·UC"
+              : "MCP"
             : a.status === "live"
             ? "Live"
             : "Preview";
